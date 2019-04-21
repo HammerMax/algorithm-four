@@ -1,7 +1,16 @@
 package main
 
-import "fmt"
+import (
+	"log"
+	"net/http"
+	"strconv"
+)
+
+const port = 2001
 
 func main(){
-	fmt.Println("123ssss")
+	go heartbeat.StartHeartbeat()
+	go locate.StartLocate()
+	http.HandleFunc("/objects/", objects.Handler)
+	log.Fatal(http.ListenAndServe(":" + strconv.Itoa(port), nil))
 }
