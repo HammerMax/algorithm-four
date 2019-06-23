@@ -4,9 +4,14 @@ import (
 	"errors"
 	"sync"
 )
+// ErrCompacted Storage.Entries/Compact方法返回，当requested index因早于snapshot而不可用
+var ErrCompacted = errors.New("requested index is unavailable due to compaction")
 
-// 要应用snapshot比现有的snapshot旧
+// ErrSnapOutOfData 要应用snapshot比现有的snapshot旧
 var ErrSnapOutOfDate = errors.New("requested index is older than the existing snapshot")
+
+// ErrUnavailable 当request index对应的日志不可用
+var ErrUnavailable = errors.New("requested entry at index is unavailable")
 
 type Storage interface {
 	InitialState() (HardState, ConfState, error)
@@ -116,6 +121,26 @@ func (ms *MemoryStorage) ApplySnapshot(snap Snapshot) error {
 	// 初始化ents，并赋值ents[0]
 	ms.ents = []Entry{{Term: snap.Metadata.Term, Index: snap.Metadata.Index}}
 	return nil
+}
+
+func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]Entry, error) {
+	ms.Lock()
+	defer ms.Unlock()
+	// 如果 lo 早于snapshot，返回错误
+	offset:= ms.ents[0].Index
+	if lo <= offset {
+		return nil, ErrCompacted
+	}
+	if hi > ms.lastIndex()+1 {
+		raftLogger.Panicf("entries' hi(%d) is out of bound lastindex(%d)", hi, ms.lastIndex())
+	}
+	// 只包含在初始化时的dummy Entry
+	if len(ms.ents) == 1 {
+		return nil, ErrUnavailable
+	}
+
+	ents := ms.ents[lo-offset : hi-offset]
+	return limitSize(ents, maxSize), nil
 }
 
 // 追加日志ents
