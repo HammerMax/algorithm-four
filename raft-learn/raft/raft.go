@@ -1,5 +1,9 @@
 package raft
 
+import "math"
+
+const noLimit = math.MaxUint64
+
 type raft struct {
 	// 当前节点在集群中的ID
 	id uint64
@@ -19,9 +23,4 @@ type raft struct {
 
 	// Leader节点会记录集群中其他节点的日志复制情况（NextIndex和MatchIndex）
 	prs
-}
-
-// 本地Log
-type raftLog struct {
-
 }
