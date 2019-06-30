@@ -22,5 +22,23 @@ type raft struct {
 	maxMsgSize uint64
 
 	// Leader节点会记录集群中其他节点的日志复制情况（NextIndex和MatchIndex）
-	prs
+}
+
+type Config struct {
+	Storage Storage
+
+	Logger Logger
+
+	MaxCommittedSizePerReady uint64
+}
+
+func (c *Config) validate() error {
+	return nil
+}
+
+func newRaft(c *Config) *raft {
+	if err := c.validate(); err != nil {
+		panic(err.Error())
+	}
+	raftlog := newLogWithSize(c.Storage, c.L)
 }

@@ -166,11 +166,25 @@ func (l *raftLog) hasNextEnts() bool {
 	return l.committed+1 > off
 }
 
+// 返回所有未应用但已提交的日志
 func (l *raftLog) nextEnts() (ents []Entry) {
 	off := max(l.applied+1, l.firstIndex())
 	if l.committed+1 > off {
-		ents, err :=
+		ents, err := l.slice(off, l.committed+1, l.maxNextEntsSize)
+		if err != nil {
+			l.logger.Panicf("unexpected error when getting unapplied entries (%v)", err)
+		}
+		return ents
 	}
+	return nil
+}
+
+// 返回 i - lastIndex 的所有日志
+func (l *raftLog) entries(i, maxsize uint64) ([]Entry, error) {
+	if i > l.lastIndex() {
+		return nil, nil
+	}
+	return l.slice(i, l.lastIndex()+1, maxsize)
 }
 
 func (l *raftLog) slice(lo, hi, maxSize uint64) ([]Entry, error) {
@@ -202,9 +216,31 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]Entry, error) {
 	if hi > l.unstable.offset {
 		unstable := l.unstable.slice(max(lo, l.unstable.offset), hi)
 		if len(ents) > 0 {
-			combined := make([]Entry)
+			// TODO 这里的做法与 ents = append(ents, unstable) 的区别
+			combined := make([]Entry, len(ents)+len(unstable))
+			n := copy(combined, ents)
+			copy(combined[n:], unstable)
+			ents = combined
+		} else {
+			ents = unstable
 		}
 	}
+	return limitSize(ents, maxSize), nil
+}
+
+// 用于比较日志的新旧
+// lasti, term 分别是Candidate节点的最大记录索引值和最大任期号
+func (l *raftLog) isUpToDate(lasti, term uint64) bool {
+	// 先比较任期号，任期号相同时再比较索引值
+	return term > l.lastTerm() || (term == l.lastTerm() && lasti >= l.lastIndex())
+}
+
+func (l *raftLog) lastTerm() uint64 {
+	t, err := l.term(l.lastIndex())
+	if err != nil {
+		l.logger.Panicf("unexpected error when getting the last term (%v)", err)
+	}
+	return t
 }
 
 func (l *raftLog) mustCheckOutOfBounds(lo, hi uint64) error {
