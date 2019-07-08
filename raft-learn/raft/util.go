@@ -1,5 +1,7 @@
 package raft
 
+import "fmt"
+
 func min(a, b uint64) uint64 {
 	if a > b {
 		return b
@@ -27,4 +29,22 @@ func limitSize(ents []Entry, maxSize uint64) []Entry {
 		}
 	}
 	return ents[:limit]
+}
+
+// PayloadSize is the size of the payload of this Entry. Notably, it does not
+// depend on its Index or Term.
+func PayloadSize(e Entry) int {
+	return len(e.Data)
+}
+
+// voteResponseType maps vote and prevote message types to their corresponding responses.
+func voteRespMsgType(msgt MessageType) MessageType {
+	switch msgt {
+	case MsgVote:
+		return MsgVoteResp
+	case MsgPreVote:
+		return MsgPreVoteResp
+	default:
+		panic(fmt.Sprintf("not a vote message: %s", msgt))
+	}
 }

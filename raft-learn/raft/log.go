@@ -114,6 +114,13 @@ func (l *raftLog) term(i uint64) (uint64, error) {
 	panic(err)
 }
 
+func (l *raftLog) snapshot() (Snapshot, error) {
+	if l.unstable.snapshot != nil {
+		return *l.unstable.snapshot, nil
+	}
+	return l.storage.Snapshot()
+}
+
 func (l *raftLog) firstIndex() uint64 {
 	if i, ok := l.unstable.maybeFirstIndex(); ok {
 		return i
@@ -233,6 +240,17 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]Entry, error) {
 func (l *raftLog) isUpToDate(lasti, term uint64) bool {
 	// 先比较任期号，任期号相同时再比较索引值
 	return term > l.lastTerm() || (term == l.lastTerm() && lasti >= l.lastIndex())
+}
+
+func (l *raftLog) appliedTo(i uint64) {
+	if i == 0 {
+		return
+	}
+	if l.committed < i || i < l.applied {
+		l.logger.Panicf("applied(%d) is out of range [prevApplied(%d), committed(%d)]", i, l.applied, l.committed)
+	}
+	l.applied = i
+
 }
 
 func (l *raftLog) lastTerm() uint64 {

@@ -14,6 +14,9 @@ var ErrSnapOutOfDate = errors.New("requested index is older than the existing sn
 // ErrUnavailable 当request index对应的日志不可用
 var ErrUnavailable = errors.New("requested entry at index is unavailable")
 
+// ErrSnapshotTemporarilyUnavailable storage中的快照不可用
+var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unavailable")
+
 type Storage interface {
 	InitialState() (HardState, ConfState, error)
 
@@ -31,40 +34,6 @@ type Storage interface {
 
 	// 返回最近一次生成的快照
 	Snapshot() (Snapshot, error)
-}
-
-// 自身节点一些必要信息
-type HardState struct {
-	Term   uint64
-	Vote   uint64
-	Commit uint64
-}
-
-// 当前集群中所有节点的ID
-type ConfState struct {
-	Nodes    []uint64
-	Learners []uint64
-}
-
-// 日志
-type Entry struct {
-	Term  uint64
-	Index uint64
-	Type  EntryType
-	Data  []byte
-}
-
-func (e *Entry) Size() int {
-	return 1
-}
-
-// 日志类型
-type EntryType int32
-
-// 快照
-type Snapshot struct {
-	Data     []byte
-	Metadata SnapshotMetadata
 }
 
 type SnapshotMetadata struct {
