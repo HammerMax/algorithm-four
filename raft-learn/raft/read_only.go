@@ -9,3 +9,7 @@ func newReadOnly(option ReadOnlyOption) *readOnly {
 
 	}
 }
+
+func (ro *readOnly) lastPendingRequestCtx() string {
+	return ""
+}

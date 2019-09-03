@@ -2,6 +2,7 @@ package raft
 
 import (
 	"bytes"
+	"errors"
 	"etcd/raft/quorum"
 	"etcd/raft/tracker"
 	"fmt"
@@ -15,6 +16,10 @@ import (
 const None uint64 = 0
 const noLimit = math.MaxUint64
 
+// ErrProposalDropped is returned when the proposal is ignored by some cases,
+// so that the proposer can be notified and fail fast.
+var ErrProposalDropped = errors.New("raft proposal dropped")
+
 // Possible values for StateType.
 const (
 	StateFollower StateType = iota
@@ -24,6 +29,11 @@ const (
 )
 
 type ReadOnlyOption int
+
+const (
+	ReadOnlySafe ReadOnlyOption = iota
+	ReadOnlyLeaseBased
+)
 
 // StateType 表明该节点的身份
 type StateType uint64
@@ -72,6 +82,7 @@ type raft struct {
 	// 是否开启checkQuorum模式。
 	// 当发生网络分区现象时，同一时刻会出现多个Leader。旧的leader会根据心跳的ack检查
 	// follower是否达到半数。如果没有达到则becomeFollower。
+	// checkQuorum 为 true，就是开启定时检测是否与集群中多数节点相连
 	checkQuorum bool
 	preVote bool
 
@@ -136,6 +147,38 @@ type Config struct {
 }
 
 func (c *Config) validate() error {
+	if c.ID == None {
+		return errors.New("cannot use none as id")
+	}
+
+	if c.HeartbeatTick <= 0 {
+		return errors.New("heartbeat tick must be greater than 0")
+	}
+
+	if c.ElectionTick <= c.HeartbeatTick {
+		return errors.New("election tick must be greater than heartbeat tick")
+	}
+
+	if c.Storage == nil {
+		return errors.New("storage cannot be nil")
+	}
+
+	if c.MaxUncommittedEntriesSize == 0 {
+		c.MaxUncommittedEntriesSize = noLimit
+	}
+
+	if c.MaxCommittedSizePerReady == 0 {
+		c.MaxCommittedSizePerReady = c.MaxSizePerMsg
+	}
+
+	if c.Logger == nil {
+		c.Logger = raftLogger
+	}
+
+	if c.ReadOnlyOption == ReadOnlyLeaseBased && !c.CheckQuorom {
+		return errors.New("CheckQuorum must be enabled when ReadOnlyOption is ReadOnlyLeaseBased")
+	}
+
 	return nil
 }
 
@@ -325,6 +368,10 @@ func stepFollower(r *raft, m Message) error {
 		r.electionElapsed = 0
 		r.lead = m.From
 		r.handleAppendEntries(m)
+	case MsgHeartbeat:
+		r.electionElapsed = 0
+		r.lead = m.From
+
 	}
 	return nil
 }
@@ -364,6 +411,37 @@ func stepCandidate(r *raft, m Message) error {
 }
 
 func stepLeader(r *raft, m Message) error {
+	// 这些消息不需要获取progress
+	switch m.Type {
+	case MsgBeat:
+		r.bcastHeartbeat()
+		return nil
+	case MsgCheckQuorum:
+		if pr := r.prs.Progress[r.id]; pr != nil {
+			pr.RecentActive = true
+		}
+		if !r.prs.QuorunActive() {
+			r.logger.Warningf("%x stepped down to follower since quorum is not active", r.id)
+			r.becomeFollower(r.Term, None)
+		}
+		// 确认之后，将所有节点的RecentActive设置为false
+		// 之后在心态的过程中会重新置回true
+		r.prs.Visit(func(id uint64, pr *tracker.Progress) {
+			if id != r.id {
+				pr.RecentActive = false
+			}
+		})
+		return nil
+	case MsgProp:
+		if len(m.Entries) == 0 {
+			r.logger.Panicf("%x stepped empty MsgProp", r.id)
+		}
+		if r.prs.Progress[r.id] == nil {
+			return ErrProposalDropped
+		}
+
+	}
+
 	pr := r.prs.Progress[m.From]
 	if pr == nil {
 		r.logger.Debugf("%x no progress available for %x", r.id, m.From)
@@ -420,6 +498,11 @@ func stepLeader(r *raft, m Message) error {
 
 			}
 		}
+	case MsgHeartbeatResp:
+		pr.RecentActive = true
+		pr.ProbeSent = false
+
+		// P82
 	}
 	return nil
 }
@@ -440,6 +523,18 @@ func (r *raft) handleAppendEntries(m Message) {
 	}
 }
 
+func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
+	commit := min(r.prs.Progress[to].Match, r.raftLog.committed)
+	m := Message{
+		To: to,
+		Type: MsgHeartbeat,
+		Commit: commit,
+		Context: ctx,
+	}
+
+	r.send(m)
+}
+
 // 成为leader后，向全体节点同步数据,全部按leader当前commited，各节点进行自身commit
 func (r *raft) bcastAppend() {
 	r.prs.Visit(func(id uint64, _ *tracker.Progress) {
@@ -449,6 +544,26 @@ func (r *raft) bcastAppend() {
 
 		r.sendAppend(id)
 	})
+}
+
+// 广播心跳
+func (r *raft) bcastHeartbeat() {
+	lastCtx := r.readOnly.lastPendingRequestCtx()
+	if len(lastCtx) == 0 {
+		r.bcastHeartbeatWithCtx(nil)
+	} else {
+		r.bcastHeartbeatWithCtx([]byte(lastCtx))
+	}
+}
+
+func (r *raft) bcastHeartbeatWithCtx(ctx []byte) {
+	r.prs.Visit(func(id uint64, _ *tracker.Progress) {
+		if id == r.id {
+			return
+		}
+		r.sendHeartbeat(id, ctx)
+	})
+
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -519,6 +634,8 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 				last := m.Entries[n-1].Index
 				// 更新该节点对应的nextIndex
 				// 名字很形象，乐观的认为一定成功，所以在还未收到ack就将pr.next++
+				// 因为向StateReplicate发送message是async，所以这里不等待回复就update。
+				// 而且这里只更新nextIndex值，matchIndex需要等待回复才更新
 				pr.OptimisticUpdate(last)
 				pr.Inflights.Add(last)
 			case tracker.StateProbe:
@@ -611,6 +728,11 @@ func (r *raft) tickHeartbeat() {
 	}
 }
 
+func (r *raft) handleHeartbeat(m Message) {
+	r.raftLog.commitTo(m.Commit)
+	r.send(Message{To: m.From, Type: MsgHeartbeatResp, Context: m.Context})
+}
+
 // 超过选举时间
 func (r *raft) pastElectionTimeout() bool {
 	return r.electionElapsed >= r.randomizedElectionTimeout
@@ -655,8 +777,9 @@ func (r *raft) poll(id uint64, t MessageType, v bool) (granted int, rejected int
 }
 
 // 通过一条Message决定要做的事
+// 处理各类消息的入口
 func (r *raft) Step(m Message) error {
-	switch {
+	switch {   // 根据term值进行分类处理
 	case m.Term == 0:
 		// local message
 	case m.Term > r.Term:
@@ -682,7 +805,7 @@ func (r *raft) Step(m Message) error {
 		}
 	}
 
-	switch m.Type {
+	switch m.Type {  // 根据消息类型进行分类处理
 	case MsgHup:
 		if r.state != StateLeader { //只有非leader才会处理MsgHup
 			if !r.promotable() {

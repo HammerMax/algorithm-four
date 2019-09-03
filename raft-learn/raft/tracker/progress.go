@@ -1,5 +1,10 @@
 package tracker
 
+import (
+	"fmt"
+	"strings"
+)
+
 type Progress struct {
 	// Match 对应Follower节点当前已经成功复制的Entry索引值
 	// Next  对应Follower节点下一个待复制Entry的索引值
@@ -19,7 +24,7 @@ type Progress struct {
 
 	IsLearner bool
 
-	// 能不能给这个节点发送entry
+	// 能不能给这个节点发送entry，这是唯一一个控制progress能否接收新日志的字段
 	ProbeSent bool
 }
 
@@ -29,9 +34,9 @@ func (pr *Progress) BecomeReplicate() {
 
 func (pr *Progress) BecomeProbe() {}
 
-
+// 重置progress，重置完成后ProbeSent为false，即可接受日志
 func (pr *Progress) ResetState(state StateType) {
-
+	pr.ProbeSent = false
 }
 
 // pr更新自身的Match和Index
@@ -48,6 +53,7 @@ func (pr *Progress) MaybeUpdate(n uint64) bool {
 	return updated
 }
 
+// Probe状态的节点成功返回了，所以将ProbeSent改为false
 func (pr *Progress) ProbeAcked() {
 	pr.ProbeSent = false
 }
@@ -116,6 +122,30 @@ func (pr *Progress) MaybeDecrTo(rejected, last uint64) bool {
 	// 只要Follower拒绝了正常的MsgApp，probeSent设置为false
 	pr.ProbeSent = false
 	return true
+}
+
+func (pr *Progress) String() string {
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "%s match=%d next=%d", pr.State, pr.Match, pr.Next)
+	if pr.IsLearner {
+		fmt.Fprint(&buf, " learner")
+	}
+	if pr.IsPaused() {
+		fmt.Fprint(&buf, " paused")
+	}
+	if pr.PendingSnapshot > 0 {
+		fmt.Fprintf(&buf, " pendingSnap=%d", pr.PendingSnapshot)
+	}
+	if !pr.RecentActive {
+		fmt.Fprintf(&buf, " inactive")
+	}
+	if n := pr.Inflights.Count(); n > 0 {
+		fmt.Fprintf(&buf, " inflight=%d", n)
+		if pr.Inflights.Full() {
+			fmt.Fprint(&buf, "[full]")
+		}
+	}
+	return buf.String()
 }
 
 // utils里有这两个方法，但此处还要重写一边，可能是希望内部包不依赖外部包（否则Cycle import）

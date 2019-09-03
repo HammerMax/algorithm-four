@@ -38,6 +38,19 @@ func (p *ProgressTracker) Visit(f func(id uint64, pr *Progress)) {
 	}
 }
 
+// 检查大部分节点是否从活，这里只是从自身视角出发，不发送网络请求
+func (p *ProgressTracker) QuorunActive() bool {
+	votes := map[uint64]bool{}
+	p.Visit(func(id uint64, pr *Progress) {
+		if pr.IsLearner {
+			return
+		}
+		votes[id] = pr.RecentActive
+	})
+
+	return p.Voters.VoteResult(votes) == quorum.VoteWon
+}
+
 // RecordVote records that the node with the given id voted for this Raft
 // instance if v == true (and declined it otherwise).
 func (p *ProgressTracker) RecordVote(id uint64, v bool) {

@@ -25,6 +25,32 @@ const (
 	MsgPreVoteResp    MessageType = 18
 )
 
+var MessageType_name = map[int32]string{
+	0:  "MsgHup",
+	1:  "MsgBeat",
+	2:  "MsgProp",
+	3:  "MsgApp",
+	4:  "MsgAppResp",
+	5:  "MsgVote",
+	6:  "MsgVoteResp",
+	7:  "MsgSnap",
+	8:  "MsgHeartbeat",
+	9:  "MsgHeartbeatResp",
+	10: "MsgUnreachable",
+	11: "MsgSnapStatus",
+	12: "MsgCheckQuorum",
+	13: "MsgTransferLeader",
+	14: "MsgTimeoutNow",
+	15: "MsgReadIndex",
+	16: "MsgReadIndexResp",
+	17: "MsgPreVote",
+	18: "MsgPreVoteResp",
+}
+
+func (x MessageType) String() string {
+	return MessageType_name[int32(x)]
+}
+
 type Message struct {
 	Term             uint64
 	Type MessageType
@@ -36,6 +62,7 @@ type Message struct {
 	Commit uint64
 	Snapshot Snapshot
 
+	// 拒绝投票
 	Reject bool
 	// 拒绝后告诉leader，自身最新的EntryIndex
 	RejectHint       uint64

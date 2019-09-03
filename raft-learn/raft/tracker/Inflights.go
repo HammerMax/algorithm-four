@@ -42,11 +42,6 @@ func (in *Inflights) Add(inflight uint64) {
 	in.count++
 }
 
-// Full returns true if no more messages can be sent at the moment.
-func (in *Inflights) Full() bool {
-	return in.count == in.size
-}
-
 func (in *Inflights) grow() {
 	newSize := len(in.buffer) * 2
 	if newSize == 0 {
@@ -61,5 +56,56 @@ func (in *Inflights) grow() {
 
 // FreeLE frees the inflights smaller or equal to the given `to` flight.
 func (in *Inflights) FreeLE(to uint64) {
+	if in.count == 0 || to < in.buffer[in.start] {
+		// out of the left side of the window
+		return
+	}
 
+	idx := in.start
+	var i int
+	for i = 0; i < in.count; i++ {
+		if to < in.buffer[idx] { // found the first large inflight
+			break
+		}
+
+		// increase index and maybe rotate
+		size := in.size
+		if idx++; idx >= size {
+			idx -= size
+		}
+	}
+	// free i inflights and set new start index
+	in.count -= i
+	in.start = idx
+	if in.count == 0 {
+		// inflights is empty, reset the start index so that we don't grow the
+		// buffer unnecessarily.
+		in.start = 0
+	}
+}
+
+// FreeFirstOne releases the first inflight. This is a no-op if nothing is
+// inflight.
+func (in *Inflights) FreeFirstOne() { in.FreeLE(in.buffer[in.start]) }
+
+// Full returns true if no more messages can be sent at the moment.
+func (in *Inflights) Full() bool {
+	return in.count == in.size
+}
+
+// Count returns the number of inflight messages.
+func (in *Inflights) Count() int { return in.count }
+
+// reset frees all inflights.
+func (in *Inflights) reset() {
+	in.count = 0
+	in.start = 0
+}
+
+// Clone returns an *Inflights that is identical to but shares no memory with
+// the receiver.
+func (in *Inflights) Clone() *Inflights {
+	ins := *in
+	ins.buffer = append([]uint64(nil), in.buffer...)
+	return &ins
 }
